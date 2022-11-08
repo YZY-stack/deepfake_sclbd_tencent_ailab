@@ -1,0 +1,137 @@
+import os
+os.environ['CUDA_VISIBLE_DEVICES'] = '0'
+osenvs = len(os.environ['CUDA_VISIBLE_DEVICES'].split(','))
+import sys
+import time
+import torch
+import torch.nn
+
+from utils import evaluate, get_dataset, FFDataset, setup_logger
+from trainer import Trainer
+import numpy as np
+import random
+
+# config
+dataset_path = '/root/autodl-tmp/FF_data/FF_LQ/'
+pretrained_path = 'pretrained/xception-b5690688.pth'
+batch_size = 32
+gpu_ids = [*range(osenvs)]
+max_epoch = 5
+loss_freq = 40
+mode = 'FAD' # ['Original', 'FAD', 'LFS', 'Both', 'Mix']
+ckpt_dir = './weights'
+ckpt_name = 'disfin'
+
+
+if __name__ == '__main__':
+    dataset = FFDataset(dataset_root=os.path.join(dataset_path, 'train', 'real'), size=256, frame_num=30, augment=True)
+    dataloader_real = torch.utils.data.DataLoader(
+        dataset=dataset,
+        batch_size=batch_size // 2,
+        shuffle=True,
+        num_workers=8,
+        collate_fn=FFDataset.collate,
+    )
+    
+    len_dataloader = dataloader_real.__len__()
+
+    dataset_img, total_len =  get_dataset(name='train', size=256, root=dataset_path, frame_num=5, augment=True)
+    dataloader_fake = torch.utils.data.DataLoader(
+        dataset=dataset_img,
+        batch_size=batch_size // 2,
+        shuffle=True,
+        num_workers=8,
+        collate_fn=FFDataset.collate,
+    )
+
+    # init checkpoint and logger
+    ckpt_path = os.path.join(ckpt_dir, ckpt_name)
+    logger = setup_logger(ckpt_path, 'result.log', 'logger')
+    best_val = 0.
+    ckpt_model_name = 'best.pkl'
+    
+    # train
+    model = Trainer(gpu_ids, mode, pretrained_path)
+    model.total_steps = 0
+    epoch = 0
+    
+    while epoch < max_epoch:
+
+        fake_iter = iter(dataloader_fake)
+        real_iter = iter(dataloader_real)
+        
+        logger.debug(f'No {epoch}')
+        i = 0
+
+        while i < len_dataloader:
+            
+            i += 1
+            model.total_steps += 1
+
+            try:
+                data_real, label_real = real_iter.next()
+                data_fake, label_fake_instance = fake_iter.next()
+                label_fake = torch.ones_like(label_real)
+            except StopIteration:
+                break
+            # -------------------------------------------------
+            
+            if data_real.shape[0] != data_fake.shape[0]:
+                continue
+
+            bz = data_real.shape[0]
+
+            # *** share label task *** #
+            data = torch.cat([data_real,data_fake],dim=0)
+            label = torch.cat([label_real,label_fake],dim=0)
+
+            # # manually shuffle
+            # idx = list(range(data.shape[0]))
+            # random.shuffle(idx)
+            # data = data[idx]
+            # label = label[idx]
+
+            data = data.detach()
+            label = label.detach()
+
+            model.set_input(data,label)
+            stu_fea, stu_cla = model.model(model.input)
+            (spe_out, sha_out), reconstruction_image_1, reconstruction_image_2, forgery_image_12 = stu_cla
+            loss_share = model.optimize_weight(sha_out)
+
+            # *** instance label task *** #
+            spe_label = torch.cat([label_real,label_fake_instance],dim=0)
+
+            # spe_label = spe_label[idx]
+            spe_label = spe_label.detach()
+
+            model.label = spe_label.to(model.device)
+            loss_specific = model.optimize_weight_ce(spe_out)
+
+            # *** mse construction task *** #
+            loss_reconstruction = model.optimize_weight_mse(
+                data_real.to(model.device),
+                data_fake.to(model.device),
+                reconstruction_image_1,
+                reconstruction_image_2,
+                forgery_image_12,
+            )
+
+            # total loss
+            loss = model.get_final_loss(loss_share, loss_specific, loss_reconstruction)
+
+            if model.total_steps % loss_freq == 0:
+                logger.debug(f'loss: {loss}, spe_loss: {loss_specific}, sha_loss: {loss_share}, mse_loss: {loss_reconstruction} at step: {model.total_steps}')
+
+            if i % int(len_dataloader / 10) == 0:
+                model.model.eval()
+                auc, r_acc, f_acc = evaluate(model, dataset_path, mode='val')
+                logger.debug(f'(Val @ epoch {epoch}) auc: {auc}, r_acc: {r_acc}, f_acc:{f_acc}')
+                # auc, r_acc, f_acc = evaluate(model, dataset_path, mode='test')
+                # logger.debug(f'(Test @ epoch {epoch}) auc: {auc}, r_acc: {r_acc}, f_acc:{f_acc}')
+                model.model.train()
+        epoch = epoch + 1
+
+    # model.model.eval()
+    # auc, r_acc, f_acc = evaluate(model, dataset_path, mode='test')
+    # logger.debug(f'(Test @ epoch {epoch}) auc: {auc}, r_acc: {r_acc}, f_acc:{f_acc}')
