@@ -12,11 +12,12 @@ import numpy as np
 import random
 
 # config
-dataset_path = '/root/autodl-tmp/FF_data/FF_LQ/'
+dataset_path = '/mntnfs/sec_data2/yanzhiyuan/FFc23/'
+celeb_path = '/mntnfs/sec_data2/yanzhiyuan/deepfakes_dataset/CelebDF1_crop'
 pretrained_path = 'pretrained/xception-b5690688.pth'
-batch_size = 32
+batch_size = 64
 gpu_ids = [*range(osenvs)]
-max_epoch = 5
+max_epoch = 30
 loss_freq = 40
 mode = 'FAD' # ['Original', 'FAD', 'LFS', 'Both', 'Mix']
 ckpt_dir = './weights'
@@ -24,7 +25,7 @@ ckpt_name = 'disfin'
 
 
 if __name__ == '__main__':
-    dataset = FFDataset(dataset_root=os.path.join(dataset_path, 'train', 'real'), size=256, frame_num=30, augment=True)
+    dataset = FFDataset(dataset_root=os.path.join(dataset_path, 'real'), size=256, frame_num=40, augment=True)
     dataloader_real = torch.utils.data.DataLoader(
         dataset=dataset,
         batch_size=batch_size // 2,
@@ -35,7 +36,7 @@ if __name__ == '__main__':
     
     len_dataloader = dataloader_real.__len__()
 
-    dataset_img, total_len =  get_dataset(name='train', size=256, root=dataset_path, frame_num=5, augment=True)
+    dataset_img, total_len =  get_dataset(name='train', size=256, root=dataset_path, frame_num=40, augment=True)
     dataloader_fake = torch.utils.data.DataLoader(
         dataset=dataset_img,
         batch_size=batch_size // 2,
@@ -125,7 +126,7 @@ if __name__ == '__main__':
 
             if i % int(len_dataloader / 10) == 0:
                 model.model.eval()
-                auc, r_acc, f_acc = evaluate(model, dataset_path, mode='val')
+                auc, r_acc, f_acc = evaluate(model, celeb_path, mode='val')
                 logger.debug(f'(Val @ epoch {epoch}) auc: {auc}, r_acc: {r_acc}, f_acc:{f_acc}')
                 # auc, r_acc, f_acc = evaluate(model, dataset_path, mode='test')
                 # logger.debug(f'(Test @ epoch {epoch}) auc: {auc}, r_acc: {r_acc}, f_acc:{f_acc}')
