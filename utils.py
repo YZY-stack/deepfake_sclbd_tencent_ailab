@@ -77,8 +77,70 @@ class FFDataset(data.Dataset):
         return len(self.train_list)
 
 
-def get_dataset(name = 'train', size=299, root='/root/autodl-tmp/FF_data/FF_LQ/', frame_num=300, augment=True):
-    root = os.path.join(root, name)
+class CelebDataset(data.Dataset):
+
+    def __init__(self, dataset_root, size=299, frame_num=50, augment=True):
+        self.data_root = dataset_root
+        self.frame_num = frame_num
+        self.train_list = self.collect_image(self.data_root)
+        if augment:
+            self.transform = trans.Compose([trans.RandomHorizontalFlip(p=0.5), trans.ToTensor()])
+            print("Augment True!")
+        else:
+            self.transform = trans.ToTensor()
+        self.max_val = 1.
+        self.min_val = -1.
+        self.size = size
+
+    def collect_image(self, root):
+        image_path_list = []
+        for split in os.listdir(root):
+            split_root = os.path.join(root, split)
+            img_list = os.listdir(split_root)
+            random.shuffle(img_list)
+            img_list = img_list if len(img_list) < self.frame_num else img_list[:self.frame_num]
+            for img in img_list:
+                img_path = os.path.join(split_root, img)
+                image_path_list.append(img_path)
+        return image_path_list
+
+    def read_image(self, path):
+        img = Image.open(path)
+        return img
+
+    def resize_image(self, image, size):
+        img = image.resize((size, size))
+        return img
+
+    def get_label(self, data_root: str):
+        label = fake_dict[data_root.split('/')[-1]]
+        return label
+
+    def __getitem__(self, index):
+        image_path = self.train_list[index]
+        img = self.read_image(image_path)
+        img = self.resize_image(img,size=self.size)
+        img = self.transform(img)
+        img = img * (self.max_val - self.min_val) + self.min_val
+        label = image_path.split('/')[-3]
+        if label == 'real': label = 0
+        elif label == 'fake': label = 1
+        else: raise ValueError("label is not fake or real")
+        return img, label
+
+    def collate(batch):
+        data, label = list(zip(*batch))
+        data = torch.stack(data, 0)
+        label = torch.tensor(label)
+        sample = (data, label)
+        return sample
+
+    def __len__(self):
+        return len(self.train_list)
+
+
+def get_dataset(name = 'train', size=299, root='/mntnfs/sec_data2/yanzhiyuan/FFc23/', frame_num=300, augment=True):
+    # root = os.path.join(root, name)
     fake_root = os.path.join(root,'fake')
 
     fake_list = ['Deepfakes', 'Face2Face', 'FaceSwap', 'NeuralTextures']
@@ -95,10 +157,14 @@ def get_dataset(name = 'train', size=299, root='/root/autodl-tmp/FF_data/FF_LQ/'
 def evaluate(model, data_path, mode='valid'):
     root= data_path
     origin_root = root
-    root = os.path.join(data_path, mode)
+    # root = os.path.join(data_path, mode)
     real_root = os.path.join(root,'real')
-    dataset_real = FFDataset(dataset_root=real_root, size=299, frame_num=50, augment=False)
-    dataset_fake, _ = get_dataset(name=mode, root=origin_root, size=299, frame_num=50, augment=False)
+    fake_root = os.path.join(root,'fake')
+    # dataset_real = FFDataset(dataset_root=real_root, size=299, frame_num=50, augment=False)
+    # dataset_fake, _ = get_dataset(name=mode, root=origin_root, size=299, frame_num=50, augment=False)
+    # dataset_img = torch.utils.data.ConcatDataset([dataset_real, dataset_fake])
+    dataset_real = CelebDataset(dataset_root=real_root, size=256, frame_num=50, augment=False)
+    dataset_fake = CelebDataset(dataset_root=fake_root, size=256, frame_num=50, augment=False)
     dataset_img = torch.utils.data.ConcatDataset([dataset_real, dataset_fake])
 
     bz = 64
