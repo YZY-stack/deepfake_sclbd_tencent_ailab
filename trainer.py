@@ -31,7 +31,7 @@ class Trainer():
         self.label = label.to(self.device)
 
     def forward(self, x, train=True):
-        fea, out = self.model(x, train)
+        fea, out = self.model(x, train=train)
         del fea
         return out
     
