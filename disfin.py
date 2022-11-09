@@ -89,7 +89,7 @@ class disfin(nn.Module):
         xcep.load_state_dict(state_dict, False)
         return xcep
     
-    def forward(self, cat_data, train=True):
+    def forward(self, cat_data, train=True, pair_index=0):
         bs = cat_data.shape[0]
         hidden = self.encoder.features(cat_data)  # -> bs,1024
         # out = self.head(hidden)
@@ -115,21 +115,15 @@ class disfin(nn.Module):
         # f2_spe = self.block_real_spe(f2).view(bs//2, -1, 1, 1)
         # f2_share = self.block_real_sha(f2).view(bs//2, -1, 1, 1)
 
-        # head for spe and sha
-        out_spe = self.head_spe(torch.cat((f2_spe, f1_spe), dim=0))
-        out_sha = self.head_sha(torch.cat((f2_share, f1_share), dim=0))
-        out = (out_spe, out_sha)
-
         if train:
             # pair combination
-            pair_index = random.randint(0, 1)
             # f1 + c2 -> f12, f3 + c1 -> near~I1, c3 + f2 -> near~I2
             if pair_index == 0:
                 # reconstruction mse loss
                 forgery_image_12 = self.con_gan(f1, c2)
                 hidden_fake_plus = self.encoder.features(forgery_image_12)
                 c3, f3 = hidden_fake_plus[:, :self.encoder_feat_dim, :, :], hidden_fake[:, self.encoder_feat_dim:, :, :]
-                # f3_spe, f3_share = f3[:, :self.half_fingerprint_dim, :, :], f2[:, self.half_fingerprint_dim:, :, :]
+                f3_spe, f3_share = f3[:, :self.half_fingerprint_dim, :, :], f2[:, self.half_fingerprint_dim:, :, :]
 
                 reconstruction_image_1 = self.con_gan(f3, c1)
                 reconstruction_image_2 = self.con_gan(f2, c3)
@@ -140,15 +134,24 @@ class disfin(nn.Module):
                 forgery_image_12 = self.con_gan(f2, c1)
                 hidden_fake_plus = self.encoder.features(forgery_image_12)
                 c3, f3 = hidden_fake_plus[:, :self.encoder_feat_dim, :, :], hidden_fake[:, self.encoder_feat_dim:, :, :]
-                # f3_spe, f3_share = f3[:, :self.half_fingerprint_dim, :, :], f2[:, self.half_fingerprint_dim:, :, :]
+                f3_spe, f3_share = f3[:, :self.half_fingerprint_dim, :, :], f2[:, self.half_fingerprint_dim:, :, :]
 
                 reconstruction_image_2 = self.con_gan(f3, c2)
                 reconstruction_image_1 = self.con_gan(f1, c3)
+
+            # head for spe and sha
+            out_spe = self.head_spe(torch.cat((f2_spe, f1_spe, f3_spe), dim=0))
+            out_sha = self.head_sha(torch.cat((f2_share, f1_share, f3_share), dim=0))
+            out = (out_spe, out_sha)
 
             return None, (out, reconstruction_image_1, reconstruction_image_2, forgery_image_12)
         
         # inference only consider share loss
         else:
+            # head for spe and sha
+            out_spe = self.head_spe(torch.cat((f2_spe, f1_spe), dim=0))
+            out_sha = self.head_sha(torch.cat((f2_share, f1_share), dim=0))
+            out = (out_spe, out_sha)
             return None, out
 
         # return f1_spe, f1_share, f2_spe, f2_share, forgery_image_12, reconstruction_image_1, reconstruction_image_2
