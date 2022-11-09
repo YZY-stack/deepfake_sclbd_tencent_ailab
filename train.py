@@ -82,6 +82,15 @@ if __name__ == '__main__':
 
             bz = data_real.shape[0]
 
+            # pair combination, label augmentation
+            pair_index = random.randint(0, 1)
+            if pair_index == 0:  # fake
+                aug_label = torch.ones_like(label_real)
+            elif pair_index == 1:  # real
+                aug_label = torch.zeros_like(label_real)
+            else:
+                raise ValueError("pair index should be 0 or 1")
+
             # *** share label task *** #
             data = torch.cat([data_real,data_fake],dim=0)
             label = torch.cat([label_real,label_fake],dim=0)
@@ -96,12 +105,15 @@ if __name__ == '__main__':
             label = label.detach()
 
             model.set_input(data,label)
-            stu_fea, stu_cla = model.model(model.input)
+            stu_fea, stu_cla = model.model(model.input, pair_index=pair_index)
             (spe_out, sha_out), reconstruction_image_1, reconstruction_image_2, forgery_image_12 = stu_cla
+
+            # *** share label task *** #
+            model.label = torch.cat([label,aug_label],dim=0).to(model.device)
             loss_share = model.optimize_weight(sha_out)
 
             # *** instance label task *** #
-            spe_label = torch.cat([label_real,label_fake_instance],dim=0)
+            spe_label = torch.cat([label_real,label_fake_instance,aug_label],dim=0)
 
             # spe_label = spe_label[idx]
             spe_label = spe_label.detach()
@@ -127,7 +139,7 @@ if __name__ == '__main__':
             if i % int(len_dataloader / 10) == 0:
                 model.model.eval()
                 auc, r_acc, f_acc = evaluate(model, celeb_path, mode='val')
-                logger.debug(f'(Val @ epoch {epoch}) auc: {auc}, r_acc: {r_acc}, f_acc:{f_acc}')
+                logger.debug(f'(Val @ epoch {epoch}) auc: {auc}, r_acc: {r_acc}, f_acc: {f_acc}')
                 # auc, r_acc, f_acc = evaluate(model, dataset_path, mode='test')
                 # logger.debug(f'(Test @ epoch {epoch}) auc: {auc}, r_acc: {r_acc}, f_acc:{f_acc}')
                 model.model.train()
