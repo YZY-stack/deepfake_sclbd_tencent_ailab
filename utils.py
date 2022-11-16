@@ -139,12 +139,10 @@ class CelebDataset(data.Dataset):
         return len(self.train_list)
 
 
-def get_dataset(name = 'train', size=299, root='/mntnfs/sec_data2/yanzhiyuan/FFc23/', frame_num=300, augment=True):
-    # root = os.path.join(root, name)
+def get_dataset(name = 'train', size=299, root='/mntnfs/sec_data2/yanzhiyuan/FFc23/', frame_num=300, augment=True, fake_list=['Deepfakes', 'Face2Face', 'FaceSwap', 'NeuralTextures']):
+    root = os.path.join(root, name)
     fake_root = os.path.join(root,'fake')
 
-    fake_list = ['Deepfakes', 'Face2Face', 'FaceSwap', 'NeuralTextures']
-    
     total_len = len(fake_list)
     dset_lst = []
     for i in range(total_len):
@@ -154,15 +152,17 @@ def get_dataset(name = 'train', size=299, root='/mntnfs/sec_data2/yanzhiyuan/FFc
         dset_lst.append(dset)
     return torch.utils.data.ConcatDataset(dset_lst), total_len
 
-def evaluate(model, data_path, mode='valid'):
+def evaluate(model, data_path, mode='val'):
     root= data_path
     origin_root = root
     # root = os.path.join(data_path, mode)
     real_root = os.path.join(root,'real')
     fake_root = os.path.join(root,'fake')
-    # dataset_real = FFDataset(dataset_root=real_root, size=299, frame_num=50, augment=False)
-    # dataset_fake, _ = get_dataset(name=mode, root=origin_root, size=299, frame_num=50, augment=False)
+    # *** FF++ *** #
+    # dataset_real = FFDataset(dataset_root=real_root, size=256, frame_num=50, augment=False)
+    # dataset_fake, _ = get_dataset(name=mode, root=origin_root, size=256, frame_num=50, augment=False, fake_list=['Deepfakes', 'Face2Face', 'FaceSwap', 'NeuralTextures'])
     # dataset_img = torch.utils.data.ConcatDataset([dataset_real, dataset_fake])
+    # *** celeb *** #
     dataset_real = CelebDataset(dataset_root=real_root, size=256, frame_num=50, augment=False)
     dataset_fake = CelebDataset(dataset_root=fake_root, size=256, frame_num=50, augment=False)
     dataset_img = torch.utils.data.ConcatDataset([dataset_real, dataset_fake])
