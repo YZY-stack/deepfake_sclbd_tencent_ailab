@@ -1,5 +1,7 @@
 import torch
 import os
+import cv2
+import albumentations as A
 import numpy as np
 import random
 from torch.utils import data
@@ -15,17 +17,62 @@ import logging
 fake_dict= {'Deepfakes': 1, 'Face2Face': 2, 'FaceSwap': 3, 'NeuralTextures': 4}
 
 
+def get_aug(img_arr):
+    trans = A.Compose([
+            A.OneOf([
+                A.RandomGamma(gamma_limit=(60, 120), p=0.9),
+                A.RandomBrightnessContrast(brightness_limit=0.2, contrast_limit=0.2, p=0.9),
+                A.CLAHE(clip_limit=4.0, tile_grid_size=(4, 4), p=0.9),
+                A.GaussianBlur(),
+            ]),
+            A.HorizontalFlip(p=0.5),
+            A.ShiftScaleRotate(shift_limit=0.2, scale_limit=0.2, rotate_limit=20,
+                                interpolation=cv2.INTER_LINEAR, border_mode=cv2.BORDER_CONSTANT, p=1),
+            A.ImageCompression(quality_lower=60, quality_upper=90, p=0.5),
+            A.OneOf([
+                    A.CoarseDropout(),
+                    A.GridDistortion(),
+                    A.GridDropout(),
+                    A.OpticalDistortion()
+                    ]),
+    ])
+    # size = img_arr.shape[0]
+    # trans = A.Compose([
+    #         A.ImageCompression(quality_lower=60, quality_upper=100, p=0.5),
+    #         A.Downscale(scale_min=0.7, scale_max=0.9, interpolation=cv2.INTER_LINEAR, p=0.3),
+    #         A.GaussNoise(p=0.1),
+    #         A.GaussianBlur(blur_limit=3, p=0.05),
+    #         A.HorizontalFlip(),
+    #         A.OneOf([
+    #             IsotropicResize(max_side=size, interpolation_down=cv2.INTER_AREA, interpolation_up=cv2.INTER_CUBIC),
+    #             IsotropicResize(max_side=size, interpolation_down=cv2.INTER_AREA, interpolation_up=cv2.INTER_LINEAR),
+    #             IsotropicResize(max_side=size, interpolation_down=cv2.INTER_LINEAR, interpolation_up=cv2.INTER_LINEAR),
+    #         ], p=1),
+    #         A.PadIfNeeded(min_height=size, min_width=size, border_mode=cv2.BORDER_CONSTANT),
+    #         A.OneOf([A.RandomBrightnessContrast(), A.FancyPCA(), A.HueSaturationValue()], p=0.7),
+    #         A.ToGray(p=0.2),
+    #         A.ShiftScaleRotate(shift_limit=0.1, scale_limit=0.2, rotate_limit=10, border_mode=cv2.BORDER_CONSTANT, p=0.5),
+            
+    #         A.OneOf([
+    #                 A.CoarseDropout(),
+    #                 A.GridDistortion(),
+    #                 A.GridDropout(),
+    #                 A.OpticalDistortion()
+    #                 ]),
+    # ]
+    # )
+    trans_img = trans(image=img_arr)['image']
+    return trans_img
+
+
 class FFDataset(data.Dataset):
 
     def __init__(self, dataset_root, frame_num=300, size=299, augment=True):
         self.data_root = dataset_root
         self.frame_num = frame_num
         self.train_list = self.collect_image(self.data_root)
-        if augment:
-            self.transform = trans.Compose([trans.RandomHorizontalFlip(p=0.5), trans.ToTensor()])
-            print("Augment True!")
-        else:
-            self.transform = trans.ToTensor()
+        self.augment = augment
+        self.transform = trans.ToTensor()
         self.max_val = 1.
         self.min_val = -1.
         self.size = size
@@ -62,8 +109,14 @@ class FFDataset(data.Dataset):
         image_path = self.train_list[index]
         img = self.read_image(image_path)
         img = self.resize_image(img,size=self.size)
+        img = np.array(img)  # from pil to numpy format
+        # do data aug
+        if self.augment:
+            img = get_aug(img)
+        # img = trans.functional.to_tensor(img)
         img = self.transform(img)
         img = img * (self.max_val - self.min_val) + self.min_val
+        # img = trans.functional.normalize(img, [0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
         return img, label
 
     def collate(batch):
@@ -84,7 +137,10 @@ class CelebDataset(data.Dataset):
         self.frame_num = frame_num
         self.train_list = self.collect_image(self.data_root)
         if augment:
-            self.transform = trans.Compose([trans.RandomHorizontalFlip(p=0.5), trans.ToTensor()])
+            self.transform = trans.Compose([
+                trans.RandomHorizontalFlip(p=0.5),
+                trans.ToTensor()
+            ])
             print("Augment True!")
         else:
             self.transform = trans.ToTensor()
