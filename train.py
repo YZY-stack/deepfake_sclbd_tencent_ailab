@@ -9,15 +9,16 @@ import torch.nn
 from utils import evaluate, get_dataset, FFDataset, setup_logger
 from trainer import Trainer
 import numpy as np
+from copy import deepcopy
 import random
 
 # config
-dataset_path = '/mntnfs/sec_data2/yanzhiyuan/FFc23/'
+dataset_path = '/mntnfs/sec_data2/yanzhiyuan/HQ/'
 celeb_path = '/mntnfs/sec_data2/yanzhiyuan/deepfakes_dataset/CelebDF1_crop'
 pretrained_path = 'pretrained/xception-b5690688.pth'
 batch_size = 64
 gpu_ids = [*range(osenvs)]
-max_epoch = 30
+max_epoch = 15
 loss_freq = 40
 mode = 'FAD' # ['Original', 'FAD', 'LFS', 'Both', 'Mix']
 ckpt_dir = './weights'
@@ -25,7 +26,7 @@ ckpt_name = 'disfin'
 
 
 if __name__ == '__main__':
-    dataset = FFDataset(dataset_root=os.path.join(dataset_path, 'real'), size=256, frame_num=40, augment=True)
+    dataset = FFDataset(dataset_root=os.path.join(dataset_path, 'train', 'real'), size=256, frame_num=100, augment=True)
     dataloader_real = torch.utils.data.DataLoader(
         dataset=dataset,
         batch_size=batch_size // 2,
@@ -36,7 +37,7 @@ if __name__ == '__main__':
     
     len_dataloader = dataloader_real.__len__()
 
-    dataset_img, total_len =  get_dataset(name='train', size=256, root=dataset_path, frame_num=40, augment=True)
+    dataset_img, total_len =  get_dataset(name='train', size=256, root=dataset_path, frame_num=100, augment=True)
     dataloader_fake = torch.utils.data.DataLoader(
         dataset=dataset_img,
         batch_size=batch_size // 2,
@@ -86,8 +87,10 @@ if __name__ == '__main__':
             pair_index = random.randint(0, 1)
             if pair_index == 0:  # fake
                 aug_label = torch.ones_like(label_real)
+                aug_label_instance = deepcopy(label_fake_instance)
             elif pair_index == 1:  # real
                 aug_label = torch.zeros_like(label_real)
+                aug_label_instance = deepcopy(aug_label)
             else:
                 raise ValueError("pair index should be 0 or 1")
 
@@ -113,7 +116,7 @@ if __name__ == '__main__':
             loss_share = model.optimize_weight(sha_out)
 
             # *** instance label task *** #
-            spe_label = torch.cat([label_real,label_fake_instance,aug_label],dim=0)
+            spe_label = torch.cat([label_real,label_fake_instance,aug_label_instance],dim=0)
 
             # spe_label = spe_label[idx]
             spe_label = spe_label.detach()
@@ -138,10 +141,10 @@ if __name__ == '__main__':
 
             if i % int(len_dataloader / 10) == 0:
                 model.model.eval()
-                auc, r_acc, f_acc = evaluate(model, celeb_path, mode='val')
-                logger.debug(f'(Val @ epoch {epoch}) auc: {auc}, r_acc: {r_acc}, f_acc: {f_acc}')
-                # auc, r_acc, f_acc = evaluate(model, dataset_path, mode='test')
-                # logger.debug(f'(Test @ epoch {epoch}) auc: {auc}, r_acc: {r_acc}, f_acc:{f_acc}')
+                # auc, r_acc, f_acc = evaluate(model, dataset_path, mode='val')
+                # logger.debug(f'(Val @ epoch {epoch}) auc: {auc}, r_acc: {r_acc}, f_acc: {f_acc}')
+                auc, r_acc, f_acc = evaluate(model, celeb_path, mode='test')
+                logger.debug(f'(Test @ epoch {epoch}) auc: {auc}, r_acc: {r_acc}, f_acc:{f_acc}')
                 model.model.train()
         epoch = epoch + 1
 
