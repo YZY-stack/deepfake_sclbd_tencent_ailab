@@ -28,7 +28,7 @@ class AdaIN(nn.Module):
         size = x.size()
         bs, ch = size[:2]
         x_ = x.view(bs, ch, -1)
-        y_ = y.view(bs, ch, -1)
+        y_ = y.reshape(bs, ch, -1)
         x_std, x_mean = self.c_norm(x_, bs, ch, eps=self.eps)
         y_std, y_mean = self.c_norm(y_, bs, ch, eps=self.eps)
         out =   ((x - x_mean.expand(size)) / x_std.expand(size)) \
