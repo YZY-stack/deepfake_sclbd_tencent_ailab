@@ -306,8 +306,8 @@ def evaluate(model, data_path, mode='val'):
                         output = model.forward(augmented_image, False)
                         tmp_pred.extend(output[1].sigmoid().flatten().tolist())  # 0:spe, 1:sha
                         tmp_true.extend(label.flatten().tolist())
-                    y_pred.extend([np.mean(x) for x in chunked(tmp_pred, 2)])
-                    y_true.extend([np.mean(x) for x in chunked(tmp_true, 2)])
+                    y_pred.extend([np.mean(x) for x in chunked(tmp_pred, len(transforms))])
+                    y_true.extend([np.mean(x) for x in chunked(tmp_true, len(transforms))])
                     torch.cuda.empty_cache()
 
     y_true, y_pred = np.array(y_true), np.array(y_pred)
