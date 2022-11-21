@@ -5,6 +5,7 @@ from model.disfin import disfin
 import torch.nn.functional as F
 import numpy as np
 import os
+from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts, MultiStepLR, StepLR
 
 
 def initModel(mod, gpu_ids):
@@ -16,7 +17,7 @@ class Trainer():
     def __init__(self, gpu_ids, mode, pretrained_path):
         self.device = torch.device('cuda:{}'.format(gpu_ids[0])) if gpu_ids else torch.device('cpu')
         # self.model = F3Net(mode=mode, device=self.device)
-        self.model = disfin(num_classes=1, img_size=299, encoder_feat_dim=512)
+        self.model = disfin(num_classes=1, encoder_feat_dim=512)
         self.model = initModel(self.model, gpu_ids)
         self.loss_fn = nn.BCEWithLogitsLoss()
         self.loss_fn_ce = nn.CrossEntropyLoss()
@@ -25,6 +26,7 @@ class Trainer():
                                               lr=0.0002, betas=(0.9, 0.999))
         # self.optimizer = torch.optim.SGD(filter(lambda p: p.requires_grad, self.model.parameters()),
         #                                         lr=0.002, momentum=0.9, weight_decay=0)
+        self.scheduler = CosineAnnealingWarmRestarts(self.optimizer, T_0=3, T_mult=2, eta_min=1e-6, last_epoch=-1)
 
     def set_input(self, input, label):
         self.input = input.to(self.device)
@@ -65,6 +67,7 @@ class Trainer():
         self.optimizer.zero_grad()
         self.loss.backward()
         self.optimizer.step()
+        self.scheduler.step()
         return self.loss
 
     def save(self, path):
