@@ -16,13 +16,13 @@ import random
 dataset_path = '/mntnfs/sec_data2/yanzhiyuan/HQ/'
 celeb_path = '/mntnfs/sec_data2/yanzhiyuan/deepfakes_dataset/CelebDF1_crop'
 pretrained_path = 'pretrained/xception-b5690688.pth'
-batch_size = 64
+batch_size = 32
 gpu_ids = [*range(osenvs)]
 max_epoch = 15
 loss_freq = 40
 mode = 'FAD' # ['Original', 'FAD', 'LFS', 'Both', 'Mix']
 ckpt_dir = './weights'
-ckpt_name = 'disfin'
+ckpt_name = 'disfin_11'
 
 
 if __name__ == '__main__':
@@ -56,6 +56,7 @@ if __name__ == '__main__':
     model = Trainer(gpu_ids, mode, pretrained_path)
     model.total_steps = 0
     epoch = 0
+    best_auc = 0.
     
     while epoch < max_epoch:
 
@@ -80,8 +81,6 @@ if __name__ == '__main__':
             
             if data_real.shape[0] != data_fake.shape[0]:
                 continue
-
-            bz = data_real.shape[0]
 
             # pair combination, label augmentation
             pair_index = random.randint(0, 1)
@@ -108,15 +107,16 @@ if __name__ == '__main__':
             label = label.detach()
 
             model.set_input(data,label)
+
             stu_fea, stu_cla = model.model(model.input, pair_index=pair_index)
             (spe_out, sha_out), reconstruction_image_1, reconstruction_image_2, forgery_image_12 = stu_cla
 
             # *** share label task *** #
-            model.label = torch.cat([label,aug_label],dim=0).to(model.device)
+            # model.label = label.to(model.device)
             loss_share = model.optimize_weight(sha_out)
 
             # *** instance label task *** #
-            spe_label = torch.cat([label_real,label_fake_instance,aug_label_instance],dim=0)
+            spe_label = torch.cat([label_real,label_fake_instance],dim=0)
 
             # spe_label = spe_label[idx]
             spe_label = spe_label.detach()
@@ -137,14 +137,17 @@ if __name__ == '__main__':
             loss = model.get_final_loss(loss_share, loss_specific, loss_reconstruction)
 
             if model.total_steps % loss_freq == 0:
-                logger.debug(f'loss: {loss}, spe_loss: {loss_specific}, sha_loss: {loss_share}, mse_loss: {loss_reconstruction} at step: {model.total_steps}')
+                logger.debug(f'loss: {loss:.5f}, spe_loss: {loss_specific:.5f}, sha_loss: {loss_share:.5f}, mse_loss: {loss_reconstruction:.5f} at step: {model.total_steps}')
 
             if i % int(len_dataloader / 10) == 0:
                 model.model.eval()
                 # auc, r_acc, f_acc = evaluate(model, dataset_path, mode='val')
-                # logger.debug(f'(Val @ epoch {epoch}) auc: {auc}, r_acc: {r_acc}, f_acc: {f_acc}')
+                # logger.debug(f'(Val @ epoch {epoch}) auc: {auc:.5f}, r_acc: {r_acc:.5f}, f_acc: {f_acc:.5f}')
                 auc, r_acc, f_acc = evaluate(model, celeb_path, mode='test')
-                logger.debug(f'(Test @ epoch {epoch}) auc: {auc}, r_acc: {r_acc}, f_acc:{f_acc}')
+                logger.debug(f'(Test @ epoch {epoch}) auc: {auc:.5f}, r_acc: {r_acc:.5f}, f_acc: {f_acc:.5f}')
+                if auc > best_auc:
+                    best_auc = auc
+                    logger.debug(f'Current Best AUC: {best_auc}')
                 model.model.train()
         epoch = epoch + 1
 
