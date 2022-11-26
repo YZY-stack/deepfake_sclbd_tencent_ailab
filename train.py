@@ -22,7 +22,7 @@ max_epoch = 15
 loss_freq = 40
 mode = 'FAD' # ['Original', 'FAD', 'LFS', 'Both', 'Mix']
 ckpt_dir = './weights'
-ckpt_name = 'disfin_11'
+ckpt_name = 'paper_disfin_notta_bs32_lr00005'
 
 
 if __name__ == '__main__':
@@ -141,13 +141,16 @@ if __name__ == '__main__':
 
             if i % int(len_dataloader / 10) == 0:
                 model.model.eval()
-                # auc, r_acc, f_acc = evaluate(model, dataset_path, mode='val')
+                # auc, r_acc, f_acc = evaluate(model, dataset_path, mode='val', test_data_name='FF++')
                 # logger.debug(f'(Val @ epoch {epoch}) auc: {auc:.5f}, r_acc: {r_acc:.5f}, f_acc: {f_acc:.5f}')
-                auc, r_acc, f_acc = evaluate(model, celeb_path, mode='test')
-                logger.debug(f'(Test @ epoch {epoch}) auc: {auc:.5f}, r_acc: {r_acc:.5f}, f_acc: {f_acc:.5f}')
+                auc, r_acc, f_acc, spe_acc = evaluate(model, dataset_path, mode='test', test_data_name='FF')
+                logger.debug(f'(Test @ epoch {epoch}) auc: {auc:.5f}, r_acc: {r_acc:.5f}, f_acc: {f_acc:.5f}, spe_acc: {spe_acc:.5f}, data_name: FF++')
+                auc, r_acc, f_acc, spe_acc = evaluate(model, celeb_path, mode='test', test_data_name='celeb')
+                logger.debug(f'(Test @ epoch {epoch}) auc: {auc:.5f}, r_acc: {r_acc:.5f}, f_acc: {f_acc:.5f}, spe_acc: {spe_acc:.5f}, data_name: celeb')
                 if auc > best_auc:
                     best_auc = auc
                     logger.debug(f'Current Best AUC: {best_auc}')
+                    model.save(path=f'{ckpt_name}.pth')
                 model.model.train()
         epoch = epoch + 1
 
