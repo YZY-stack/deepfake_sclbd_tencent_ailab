@@ -251,7 +251,15 @@ class CelebDataset(data.Dataset):
         return len(self.train_list)
 
 
-def get_dataset(name='train', size=299, root='/mntnfs/sec_data2/yanzhiyuan/FFc23/', frame_num=300, augment=True, fake_list=['Deepfakes', 'Face2Face', 'FaceSwap', 'NeuralTextures']):
+def get_dataset(
+    name='train', 
+    size=299, 
+    root='/mntnfs/sec_data2/yanzhiyuan/FFc23/',
+    frame_num=300, 
+    augment=True, 
+    fake_list=['Deepfakes', 'Face2Face', 'FaceSwap', 'NeuralTextures']
+    ):
+
     root = os.path.join(root, name)
     fake_root = os.path.join(root, 'fake')
 
@@ -268,11 +276,14 @@ def get_dataset(name='train', size=299, root='/mntnfs/sec_data2/yanzhiyuan/FFc23
 def evaluate(model, data_path, mode='val', test_data_name='celeb'):
     root = data_path
     origin_root = root
-    assert test_data_name != 'celeb' or test_data_name != 'FF', "only support celeb and FF++ two dataset name"
+    assert test_data_name != 'celeb' \
+        or test_data_name != 'FF', "only support celeb and FF++ two dataset name"
+    
     if test_data_name == 'FF':
         root = os.path.join(data_path, mode)
     real_root = os.path.join(root, 'real')
     fake_root = os.path.join(root, 'fake')
+    
     # *** FF++ *** #
     if test_data_name == 'FF':
         dataset_real = FFDataset(
