@@ -55,15 +55,41 @@ class Trainer():
         # self.optimizer.step()
         return self.loss_cla_spe
 
-    def optimize_weight_mse(self, real, fake_instance, reconstruction_image_1, reconstruction_image_2, forgery_image_12):
+    def optimize_weight_mse(
+        self, 
+        real, 
+        fake_instance, 
+        reconstruction_image_1, 
+        reconstruction_image_2, 
+        forgery_image_12,
+        f1_spe, 
+        f3_spe,
+    ):
         loss_reconstruction_1 = self.loss_fn_mse(fake_instance, reconstruction_image_1)
         loss_reconstruction_2 = self.loss_fn_mse(real, reconstruction_image_2)
         loss_reconstruction_3 = self.loss_fn_mse(real, forgery_image_12)
-        self.loss_reconstruction = loss_reconstruction_1 + loss_reconstruction_2 + loss_reconstruction_3
-        return self.loss_reconstruction
+        loss_f1_f3 = self.loss_fn_mse(f1_spe, f3_spe)
+        self.loss_reconstruction =  \
+            loss_reconstruction_1 + \
+            loss_reconstruction_2 + \
+            loss_reconstruction_3 + \
+            loss_f1_f3
+        return loss_reconstruction_1, loss_reconstruction_2, loss_reconstruction_3, loss_f1_f3
     
-    def get_final_loss(self, loss_sha, loss_spe, loss_reconstruction):
-        self.loss = loss_sha + loss_spe + loss_reconstruction
+    def get_final_loss(
+        self, 
+        loss_sha, 
+        loss_spe, 
+        loss_reconstruction,
+        lambda_sha=1,
+        lambda_spe=1,
+        lambda_mse=1,
+    ):
+        self.loss = \
+            lambda_sha * loss_sha + \
+            lambda_spe * loss_spe + \
+            lambda_mse * loss_reconstruction
+        
         self.optimizer.zero_grad()
         self.loss.backward()
         self.optimizer.step()
