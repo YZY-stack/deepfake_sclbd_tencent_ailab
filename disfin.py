@@ -175,8 +175,8 @@ class disfin(nn.Module):
                 forgery_image_12 = self.con_gan(f2, c1)
                 hidden_fake_plus = self.encoder.features(forgery_image_12)
                 # hidden_fake_plus = self.encoder.forward_features(forgery_image_12)
-                c3, f3 = hidden_fake_plus[:, :self.encoder_feat_dim, :, :], hidden_fake[:, self.encoder_feat_dim:, :, :]
-                f3_spe, f3_share = f3[:, :self.half_fingerprint_dim, :, :], f2[:, self.half_fingerprint_dim:, :, :]
+                c3, f3 = hidden_fake_plus[:, :self.encoder_feat_dim, :, :], hidden_fake_plus[:, self.encoder_feat_dim:, :, :]
+                f3_spe, f3_share = f3[:, :self.half_fingerprint_dim, :, :], f3[:, self.half_fingerprint_dim:, :, :]
 
                 reconstruction_image_2 = self.con_gan(f3, c2)
                 reconstruction_image_1 = self.con_gan(f1, c3)
