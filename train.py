@@ -5,6 +5,7 @@ import sys
 import time
 import torch
 import torch.nn
+import torch.backends.cudnn as cudnn
 from torchvision import utils as vutils
 
 from utils import evaluate, get_dataset, FFDataset, setup_logger
@@ -22,15 +23,26 @@ gpu_ids = [*range(osenvs)]
 max_epoch = 15
 loss_freq = 40
 visualization = False
-mode = 'FAD' # ['Original', 'FAD', 'LFS', 'Both', 'Mix']
 ckpt_dir = './weights'
-ckpt_name = 'paper_disfin_notta_bs32_lr00002_mlp_addlambda_imgshow_new'
+ckpt_name = 'paper_disfin_notta_bs32_lr00002_2enc_weightdecay1e4_drop0.7_addlambda_0.3_wof1f3loss_huberloss'
 img_save_path = 'img_save'
 os.makedirs(img_save_path, exist_ok=True)
 
+# fix the seed for reproducibility
+seed = 0
+torch.manual_seed(seed)
+np.random.seed(seed)
+cudnn.benchmark = True
+
 
 if __name__ == '__main__':
-    dataset = FFDataset(dataset_root=os.path.join(dataset_path, 'train', 'real'), size=256, frame_num=100, augment=True)
+    dataset = FFDataset(
+        dataset_root=os.path.join(dataset_path, 'train', 'real'), 
+        size=256, 
+        frame_num=100, 
+        augment=True
+    )
+
     dataloader_real = torch.utils.data.DataLoader(
         dataset=dataset,
         batch_size=batch_size // 2,
@@ -41,7 +53,14 @@ if __name__ == '__main__':
     
     len_dataloader = dataloader_real.__len__()
 
-    dataset_img, total_len =  get_dataset(name='train', size=256, root=dataset_path, frame_num=100, augment=True)
+    dataset_img, total_len = get_dataset(
+        name='train', 
+        size=256, 
+        root=dataset_path, 
+        frame_num=100, 
+        augment=True
+    )
+
     dataloader_fake = torch.utils.data.DataLoader(
         dataset=dataset_img,
         batch_size=batch_size // 2,
@@ -57,7 +76,8 @@ if __name__ == '__main__':
     ckpt_model_name = 'best.pkl'
     
     # train
-    model = Trainer(gpu_ids, mode, pretrained_path)
+    num_training_steps_per_epoch = len(dataset) // batch_size
+    model = Trainer(gpu_ids, pretrained_path, num_training_steps_per_epoch)
     model.total_steps = 0
     epoch = 0
     best_auc = 0.
@@ -118,7 +138,7 @@ if __name__ == '__main__':
             reconstruction_image_2, \
             forgery_image_12, \
             f1_spe, f3_spe \
-            = stu_cla
+                = stu_cla
 
             # *** share label task *** #
             # model.label = label.to(model.device)
@@ -150,8 +170,7 @@ if __name__ == '__main__':
 
             loss_reconstruction = loss_reconstruction_1 + \
                                   loss_reconstruction_2 + \
-                                  loss_reconstruction_3 + \
-                                  loss_f1_f3
+                                  loss_reconstruction_3
 
             # total loss
             loss = model.get_final_loss(
@@ -163,15 +182,16 @@ if __name__ == '__main__':
             if model.total_steps % loss_freq == 0:
                 logger.debug(
                     f'loss: {loss:.5f}' 
-                    f'spe_loss: {loss_specific:.5f}' 
-                    f'sha_loss: {loss_share:.5f}' 
-                    f'mse_loss: {loss_reconstruction:.5f}' 
-                    f'loss_fake_reconstruction1: {loss_reconstruction_1:.5f}' 
-                    f'loss_real_reconstruction2: {loss_reconstruction_2:.5f}' 
-                    f'loss_forgery_real: {loss_reconstruction_3:.5f}' 
-                    f'loss_f1_f3_spe: {loss_f1_f3:.5f}' 
-                    f'at step: {model.total_steps}'
+                    f' spe_loss: {loss_specific:.5f}' 
+                    f' sha_loss: {loss_share:.5f}' 
+                    f' mse_loss: {loss_reconstruction:.5f}' 
+                    f' loss_fake_reconstruction1: {loss_reconstruction_1:.5f}' 
+                    f' loss_real_reconstruction2: {loss_reconstruction_2:.5f}' 
+                    f' loss_forgery_real: {loss_reconstruction_3:.5f}' 
+                    # f' loss_f1_f3_spe: {loss_f1_f3:.5f}' 
+                    f' at step: {model.total_steps}'
                 )
+
                 # save img
                 if visualization:
                     vutils.save_image(
@@ -189,7 +209,7 @@ if __name__ == '__main__':
                     vutils.save_image(
                         data_real.detach().cpu(), 
                         f'{img_save_path}/epoch{epoch}_step{model.total_steps}_data_real.png')
-                        
+
                     vutils.save_image(
                         data_fake.detach().cpu(), 
                         f'{img_save_path}/epoch{epoch}_step{model.total_steps}_data_fake.png')
@@ -198,10 +218,38 @@ if __name__ == '__main__':
                 model.model.eval()
                 # auc, r_acc, f_acc = evaluate(model, dataset_path, mode='val', test_data_name='FF++')
                 # logger.debug(f'(Val @ epoch {epoch}) auc: {auc:.5f}, r_acc: {r_acc:.5f}, f_acc: {f_acc:.5f}')
-                auc, r_acc, f_acc, spe_acc = evaluate(model, dataset_path, mode='test', test_data_name='FF')
-                logger.debug(f'(Test @ epoch {epoch}) auc: {auc:.5f}, r_acc: {r_acc:.5f}, f_acc: {f_acc:.5f}, spe_acc: {spe_acc:.5f}, data_name: FF++')
-                auc, r_acc, f_acc, spe_acc = evaluate(model, celeb_path, mode='test', test_data_name='celeb')
-                logger.debug(f'(Test @ epoch {epoch}) auc: {auc:.5f}, r_acc: {r_acc:.5f}, f_acc: {f_acc:.5f}, spe_acc: {spe_acc:.5f}, data_name: celeb')
+                auc, r_acc, f_acc, spe_acc = evaluate(
+                    model, 
+                    dataset_path, 
+                    mode='test', 
+                    test_data_name='FF'
+                )
+
+                logger.debug(
+                    f'(Test @ epoch {epoch})' 
+                    f' auc: {auc:.5f}'
+                    f' r_acc: {r_acc:.5f}'
+                    f' f_acc: {f_acc:.5f}'
+                    f' spe_acc: {spe_acc:.5f}' 
+                    f' data_name: FF++'
+                )
+
+                auc, r_acc, f_acc, spe_acc = evaluate(
+                    model, 
+                    celeb_path, 
+                    mode='test', 
+                    test_data_name='celeb'
+                )
+
+                logger.debug(
+                    f'(Test @ epoch {epoch})' 
+                    f' auc: {auc:.5f}'
+                    f' r_acc: {r_acc:.5f}'
+                    f' f_acc: {f_acc:.5f}'
+                    f' spe_acc: {spe_acc:.5f}' 
+                    f' data_name: celeb'
+                )
+
                 if auc > best_auc:
                     best_auc = auc
                     logger.debug(f'Current Best AUC: {best_auc}')
