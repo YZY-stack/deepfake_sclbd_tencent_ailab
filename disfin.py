@@ -75,6 +75,8 @@ class disfin(nn.Module):
 
         # models
         self.encoder = self.init_xcep()  # xception
+        # self.encoder_f = self.init_xcep()  # xception
+        # self.encoder_c = self.init_xcep()  # xception
         # self.encoder = self.init_resnest()  # resnest
         # self.encoder = self.init_efficient()  # efficient
         # self.encoder = self.init_convnext()  # convnext
@@ -83,6 +85,7 @@ class disfin(nn.Module):
         self.con_gan = CUNet(2)
         # self.block_fake = MLP(in_f=1024, hidden_dim=512, out_f=512)
         # self.block_real = MLP(in_f=1024, hidden_dim=512, out_f=512)
+        self.adjust_conv = Conv2d1x1(in_f=1024, hidden_dim=512, out_f=512)
 
         self.head_spe = Head(in_f=256, hidden_dim=512, out_f=5)
         self.head_sha = Head(in_f=256, hidden_dim=512, out_f=1)
@@ -128,22 +131,21 @@ class disfin(nn.Module):
         )
         return net
 
-    def forward(self, cat_data, train=True, pair_index=0):
+    def forward(self, cat_data, train=True):
         bs = cat_data.shape[0]
         hidden = self.encoder.features(cat_data)  # -> bs,1024
         # hidden = self.encoder.forward_features(cat_data)  # -> bs,1024
-        # out = self.head(hidden)
         hidden_real = hidden[:bs//2, :, :, :]
         hidden_fake = hidden[bs//2:, :, :, :]
-        # out_spe = self.head_spe(hidden)
-        # out_sha = self.head_sha(hidden)
-        # out = (out_spe, out_sha)
 
-        # c1, f1 = hidden_fake[:, :self.encoder_feat_dim, :, :], hidden_fake[:, self.encoder_feat_dim:, :, :]
-        # f1_spe, f1_share = f1[:, :self.half_fingerprint_dim, :, :], f1[:, self.half_fingerprint_dim:, :, :]
-
-        # c2, f2 = hidden_real[:, :self.encoder_feat_dim, :, :], hidden_real[:, self.encoder_feat_dim:, :, :]
-        # f2_spe, f2_share = f2[:, :self.half_fingerprint_dim, :, :], f2[:, self.half_fingerprint_dim:, :, :]
+        # f_all = self.adjust_conv(self.encoder_f.features(cat_data))  # -> bs,1024
+        # c_all = self.adjust_conv(self.encoder_c.features(cat_data))  # -> bs,1024
+        
+        # f2 = f_all[:bs//2, :, :, :]
+        # f1 = f_all[bs//2:, :, :, :]
+        
+        # c2 = c_all[:bs//2, :, :, :]
+        # c1 = c_all[bs//2:, :, :, :]
 
         f1 = self.block_fin(hidden_fake)
         c1 = self.block_con(hidden_fake)
@@ -158,28 +160,19 @@ class disfin(nn.Module):
         if train:
             # pair combination
             # f1 + c2 -> f12, f3 + c1 -> near~I1, c3 + f2 -> near~I2
-            if pair_index == 0:
-                # reconstruction mse loss
-                forgery_image_12 = self.con_gan(f1, c2)
-                hidden_fake_plus = self.encoder.features(forgery_image_12)
-                # hidden_fake_plus = self.encoder.forward_features(forgery_image_12)
-                c3, f3 = hidden_fake_plus[:, :self.encoder_feat_dim, :, :], hidden_fake_plus[:, self.encoder_feat_dim:, :, :]
-                f3_spe, f3_share = f3[:, :self.half_fingerprint_dim, :, :], f3[:, self.half_fingerprint_dim:, :, :]
+            # reconstruction mse loss
+            forgery_image_12 = self.con_gan(f1, c2)
+            hidden_fake_plus = self.encoder.features(forgery_image_12)
+            # f3 = self.adjust_conv(self.encoder_f.features(forgery_image_12))
+            # c3 = self.adjust_conv(self.encoder_c.features(forgery_image_12))
 
-                reconstruction_image_1 = self.con_gan(f3, c1)
-                reconstruction_image_2 = self.con_gan(f2, c3)
-            
-            # f2 + c1 -> f21, f3 + c2 -> near~I2, c3 + f1 -> near~I1
-            else:
-                # reconstruction mse loss
-                forgery_image_12 = self.con_gan(f2, c1)
-                hidden_fake_plus = self.encoder.features(forgery_image_12)
-                # hidden_fake_plus = self.encoder.forward_features(forgery_image_12)
-                c3, f3 = hidden_fake_plus[:, :self.encoder_feat_dim, :, :], hidden_fake_plus[:, self.encoder_feat_dim:, :, :]
-                f3_spe, f3_share = f3[:, :self.half_fingerprint_dim, :, :], f3[:, self.half_fingerprint_dim:, :, :]
+            f3 = self.block_fin(hidden_fake_plus)
+            c3 = self.block_con(hidden_fake_plus)
+            f3_spe = self.block_spe(f3)
+            f3_share = self.block_sha(f3)
 
-                reconstruction_image_2 = self.con_gan(f3, c2)
-                reconstruction_image_1 = self.con_gan(f1, c3)
+            reconstruction_image_1 = self.con_gan(f3, c1)
+            reconstruction_image_2 = self.con_gan(f2, c3)
 
             # head for spe and sha
             # out_spe = self.head_spe(torch.cat((f2_spe, f1_spe, f3_spe), dim=0))
@@ -201,5 +194,3 @@ class disfin(nn.Module):
             out_sha = self.head_sha(torch.cat((f2_share, f1_share), dim=0))
             out = (out_spe, out_sha)
             return None, out
-
-        # return f1_spe, f1_share, f2_spe, f2_share, forgery_image_12, reconstruction_image_1, reconstruction_image_2
