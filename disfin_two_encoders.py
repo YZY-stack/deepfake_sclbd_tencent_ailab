@@ -1,8 +1,9 @@
 #-*- coding: utf-8 -*-
 from model.xception import Xception
-from model.resnest import Resnest
+# from model.resnest import Resnest
 # from model.efficient import Efficient
 from cunet import Conditional_UNet as CUNet
+from model.disc import Disc
 import math
 import random
 import numpy as np
@@ -41,24 +42,24 @@ class Conv2d1x1(nn.Module):
         return x
 
 class Head(torch.nn.Module):
-  def __init__(self, in_f, hidden_dim, out_f):
-    super(Head, self).__init__()
-    self.do = nn.Dropout(0.2)
-    self.pool = nn.AdaptiveAvgPool2d(1)
-    self.mlp = nn.Sequential(nn.Linear(in_f, hidden_dim),
-                            nn.LeakyReLU(inplace=True),
-                            nn.Linear(hidden_dim, hidden_dim),
-                            nn.LeakyReLU(inplace=True),
-                            nn.Linear(hidden_dim, in_f//2),
-                            nn.LeakyReLU(inplace=True),
-                            nn.Linear(in_f//2, out_f),)
+    def __init__(self, in_f, hidden_dim, out_f):
+        super(Head, self).__init__()
+        self.do = nn.Dropout(0.2)
+        self.pool = nn.AdaptiveAvgPool2d(1)
+        self.mlp = nn.Sequential(nn.Linear(in_f, hidden_dim),
+                                nn.LeakyReLU(inplace=True),
+                                nn.Linear(hidden_dim, hidden_dim),
+                                nn.LeakyReLU(inplace=True),
+                                nn.Linear(hidden_dim, in_f//2),
+                                nn.LeakyReLU(inplace=True),
+                                nn.Linear(in_f//2, out_f),)
 
-  def forward(self, x):
-    bs = x.size()[0]
-    x = self.pool(x).view(bs, -1)
-    x = self.mlp(x)
-    x = self.do(x)
-    return x
+    def forward(self, x):
+        bs = x.size()[0]
+        x_feat = self.pool(x).view(bs, -1)
+        x = self.mlp(x_feat)
+        x = self.do(x)
+        return x, x_feat
 
 class disfin(nn.Module):
     def __init__(self, num_classes, encoder_feat_dim) -> None:
@@ -77,19 +78,22 @@ class disfin(nn.Module):
         # self.encoder = self.init_xcep()  # xception
         self.encoder_f = self.init_xcep()  # xception
         self.encoder_c = self.init_xcep()  # xception
+        self.discriminator = Disc()        # multiscale-discriminator
         # self.encoder = self.init_resnest()  # resnest
         # self.encoder = self.init_efficient()  # efficient
         # self.encoder = self.init_convnext()  # convnext
 
-
+        # conditional gan
         self.con_gan = CUNet(2)
         # self.block_fake = MLP(in_f=1024, hidden_dim=512, out_f=512)
         # self.block_real = MLP(in_f=1024, hidden_dim=512, out_f=512)
         self.adjust_conv = Conv2d1x1(in_f=1024, hidden_dim=512, out_f=512)
 
+        # head
         self.head_spe = Head(in_f=256, hidden_dim=512, out_f=5)
-        self.head_sha = Head(in_f=256, hidden_dim=512, out_f=1)
+        self.head_sha = Head(in_f=256, hidden_dim=512, out_f=num_classes)
 
+        # block
         self.block_fin = Conv2d1x1(in_f=1024, hidden_dim=512, out_f=512)
         self.block_con = Conv2d1x1(in_f=1024, hidden_dim=512, out_f=512)
         
@@ -122,75 +126,94 @@ class disfin(nn.Module):
     def init_convnext(self):
         from timm.models import create_model
         net = create_model(
-        'convnext_base', 
-        pretrained=True, 
-        num_classes=2, 
-        drop_path_rate=0.0,
-        # layer_scale_init_value=1e-6,
-        head_init_scale=1.0,
+            'convnext_base', 
+            pretrained=True, 
+            num_classes=2, 
+            drop_path_rate=0.0,
+            # layer_scale_init_value=1e-6,
+            head_init_scale=1.0,
         )
         return net
 
     def forward(self, cat_data, train=True):
+        real, fake = cat_data.chunk(2, dim=0)
         bs = cat_data.shape[0]
-        # hidden = self.encoder.features(cat_data)  # -> bs,1024
-        # # hidden = self.encoder.forward_features(cat_data)  # -> bs,1024
-        # hidden_real = hidden[:bs//2, :, :, :]
-        # hidden_fake = hidden[bs//2:, :, :, :]
 
+        # encoder
         f_all = self.adjust_conv(self.encoder_f.features(cat_data))  # -> bs,1024
         c_all = self.adjust_conv(self.encoder_c.features(cat_data))  # -> bs,1024
+
+        # classification, multi-task
+        f_spe = self.block_spe(f_all)
+        f_share = self.block_sha(f_all)
         
-        f2 = f_all[:bs//2, :, :, :]
-        f1 = f_all[bs//2:, :, :, :]
-        
-        c2 = c_all[:bs//2, :, :, :]
-        c1 = c_all[bs//2:, :, :, :]
-
-        # f1 = self.block_fin(hidden_fake)
-        # c1 = self.block_con(hidden_fake)
-        f1_spe = self.block_spe(f1)
-        f1_share = self.block_sha(f1)
-
-        # f2 = self.block_fin(hidden_real)
-        # c2 = self.block_con(hidden_real)
-        f2_spe = self.block_spe(f2)
-        f2_share = self.block_sha(f2)
-
+        # cross-combine
+        f2, f1 = f_all.chunk(2, dim=0)
+        c2, c1 = c_all.chunk(2, dim=0)
         if train:
-            # pair combination
-            # f1 + c2 -> f12, f3 + c1 -> near~I1, c3 + f2 -> near~I2
+            # pair combination 1
+            # f1 + c2 -> f12, f12 + c1 -> near~I1, c3 + f2 -> near~I2
             # reconstruction mse loss
             forgery_image_12 = self.con_gan(f1, c2)
-            # hidden_fake_plus = self.encoder.features(forgery_image_12)
-            f3 = self.adjust_conv(self.encoder_f.features(forgery_image_12))
-            c3 = self.adjust_conv(self.encoder_c.features(forgery_image_12))
+            f12 = self.adjust_conv(self.encoder_f.features(forgery_image_12))
+            c12 = self.adjust_conv(self.encoder_c.features(forgery_image_12))
+            f12_spe = self.block_spe(f12)
+            f12_share = self.block_sha(f12)
+            reconstruction_image_1 = self.con_gan(f12, c1)
+            reconstruction_image_2 = self.con_gan(f2, c12)
 
-            # f3 = self.block_fin(hidden_fake_plus)
-            # c3 = self.block_con(hidden_fake_plus)
-            f3_spe = self.block_spe(f3)
-            f3_share = self.block_sha(f3)
+            # pair combination 2
+            # f2 + c1 -> f21, f21 + c2 -> near~I2, c21 + f1 -> near~I1
+            # reconstruction mse loss
+            forgery_image_21 = self.con_gan(f2, c1)
+            f21 = self.adjust_conv(self.encoder_f.features(forgery_image_21))
+            c21 = self.adjust_conv(self.encoder_c.features(forgery_image_21))
+            f21_spe = self.block_spe(f21)
+            f21_share = self.block_sha(f21)
+            reconstruction_image_11 = self.con_gan(f21, c2)
+            reconstruction_image_22 = self.con_gan(f1, c21)
 
-            reconstruction_image_1 = self.con_gan(f3, c1)
-            reconstruction_image_2 = self.con_gan(f2, c3)
+            # feature loss
+            # f1_recon = self.adjust_conv(self.encoder_f.features(reconstruction_image_1))
+            # c1_recon = self.adjust_conv(self.encoder_c.features(reconstruction_image_1))
+            # f2_recon = self.adjust_conv(self.encoder_f.features(reconstruction_image_2))
+            # c2_recon = self.adjust_conv(self.encoder_c.features(reconstruction_image_2))
+
+            # # gan loss
+            # adv = self.discriminator(
+            #     torch.cat((real, reconstruction_image_2, fake, reconstruction_image_1), dim=0)
+            # )
 
             # head for spe and sha
-            # out_spe = self.head_spe(torch.cat((f2_spe, f1_spe, f3_spe), dim=0))
-            # out_sha = self.head_sha(torch.cat((f2_share, f1_share, f3_share), dim=0))
-            out_spe = self.head_spe(torch.cat((f2_spe, f1_spe), dim=0))
-            out_sha = self.head_sha(torch.cat((f2_share, f1_share), dim=0))
-            # out_sha = self.head_sha(torch.cat((f2_share, f1_share, f3_share), dim=0))
+            out_spe, _ = self.head_spe(torch.cat((f_spe, f21_spe, f12_spe), dim=0))
+            out_sha, _ = self.head_sha(torch.cat((f_share, f21_share, f12_share), dim=0))
+            # out_spe, _ = self.head_spe(f_spe)
+            # out_sha, _ = self.head_sha(f_share)
             out = (out_spe, out_sha)
 
-            f3_spe = self.pool(f3_spe)
-            f1_spe = self.pool(f1_spe)
+            # f3_spe = self.pool(f3_spe)
+            # f1_spe = self.pool(f1_spe)
+            f1 = self.pool(f1)
+            c1 = self.pool(c1)
+            # f3 = self.pool(f3)
+            c2 = self.pool(c2)
+            f2 = self.pool(f2)
+            # c3 = self.pool(c3)
 
-            return None, (out, reconstruction_image_1, reconstruction_image_2, forgery_image_12, f1_spe, f3_spe)
+            return None, (out, reconstruction_image_1, reconstruction_image_2, \
+                            reconstruction_image_11, reconstruction_image_22, \
+                            forgery_image_12, forgery_image_21, \
+                            f1, f2, c1, c2, \
+                            # f1_recon, c1_recon, f2_recon, c2_recon, \
+                            None)
+                            # adv_2, adv_1)
         
         # inference only consider share loss
         else:
             # head for spe and sha
-            out_spe = self.head_spe(torch.cat((f2_spe, f1_spe), dim=0))
-            out_sha = self.head_sha(torch.cat((f2_share, f1_share), dim=0))
+            out_spe, spe_feat = self.head_spe(f_spe)
+            out_sha, sha_feat = self.head_sha(f_share)
             out = (out_spe, out_sha)
-            return None, out
+            content = self.pool(torch.cat((c2, c1), dim=0)).view(bs, -1)
+            feat = (spe_feat, sha_feat, content)
+            return None, out, feat
