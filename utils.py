@@ -1,25 +1,72 @@
-import torch
 import os
 import cv2
-import albumentations as A
-from albumentations import DualTransform
-import ttach as tta
 import numpy as np
 import random
+import math
+
+import torch
 from torch.utils import data
 from torchvision import transforms as trans
+
 from sklearn.metrics import average_precision_score, precision_recall_curve, accuracy_score
 from sklearn.metrics import roc_curve
 from sklearn.metrics import auc as cal_auc
+
+from more_itertools import chunked
+from matplotlib import pyplot as plt
 from PIL import Image
 from copy import deepcopy
-from more_itertools import chunked
 import sys
 import logging
 
+import albumentations as A
+from albumentations import DualTransform
+import ttach as tta
+from torchtoolbox.transform import Cutout
 
-fake_dict = {'Deepfakes': 1, 'Face2Face': 2,
-             'FaceSwap': 3, 'NeuralTextures': 4}
+from tsne import *
+from grad_cam_utils import GradCAM, show_cam_on_image, center_crop_img
+
+
+fake_dict = {
+    'Deepfakes': 1, 
+    'Face2Face': 2,
+    'FaceSwap': 3, 
+    'NeuralTextures': 4, 
+    # 'Deepfakes_Face2Face': 5, 
+    # 'Deepfakes_FaceSwap': 6, 
+    # 'Deepfakes_NeuralTextures': 7, 
+    # 'Deepfakes_real': 8, 
+    # 'Face2Face_FaceSwap': 9, 
+    # 'Face2Face_NeuralTextures': 10, 
+    # 'Face2Face_real': 11, 
+    # 'FaceSwap_NeuralTextures': 12, 
+    # 'FaceSwap_real': 13, 
+    # 'NeuralTextures_real': 14,
+}
+
+
+class UnNormalize(object):
+    def __init__(self, mean, std):
+        self.mean = mean
+        self.std = std
+
+    def __call__(self, tensor):
+        """
+        Args:
+            tensor (Tensor): Tensor image of size (C, H, W) to be normalized.
+        Returns:
+            Tensor: Normalized image.
+        """
+        for t, m, s in zip(tensor, self.mean, self.std):
+            t.mul_(s).add_(m)
+            # The normalize code -> t.sub_(m).div_(s)
+        return tensor
+
+
+inverser = UnNormalize(
+            mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)
+        )
 
 
 def isotropically_resize_image(img, size, interpolation_down=cv2.INTER_AREA, interpolation_up=cv2.INTER_CUBIC):
@@ -59,24 +106,6 @@ class IsotropicResize(DualTransform):
 
 
 def get_aug(img_arr):
-    # trans = A.Compose([
-    #         A.OneOf([
-    #             A.RandomGamma(gamma_limit=(60, 120), p=0.9),
-    #             A.RandomBrightnessContrast(brightness_limit=0.2, contrast_limit=0.2, p=0.9),
-    #             A.CLAHE(clip_limit=4.0, tile_grid_size=(4, 4), p=0.9),
-    #             A.GaussianBlur(),
-    #         ]),
-    #         A.HorizontalFlip(p=0.5),
-    #         A.ShiftScaleRotate(shift_limit=0.2, scale_limit=0.2, rotate_limit=20,
-    #                             interpolation=cv2.INTER_LINEAR, border_mode=cv2.BORDER_CONSTANT, p=1),
-    #         A.ImageCompression(quality_lower=60, quality_upper=90, p=0.5),
-    #         A.OneOf([
-    #                 A.CoarseDropout(),
-    #                 A.GridDistortion(),
-    #                 A.GridDropout(),
-    #                 A.OpticalDistortion()
-    #                 ]),
-    # ])
     size = img_arr.shape[0]
     trans = A.Compose([
         A.ImageCompression(quality_lower=60, quality_upper=100, p=0.5),
@@ -96,8 +125,9 @@ def get_aug(img_arr):
         A.PadIfNeeded(min_height=size, min_width=size,
                       border_mode=cv2.BORDER_CONSTANT),
         A.OneOf([A.RandomBrightnessContrast(), A.FancyPCA(),
-                A.HueSaturationValue()], p=0.7),
-        A.ToGray(p=0.2),
+                A.HueSaturationValue()], p=0.3),
+        # # add cut out method
+        # A.Cutout(p=0.5),
         A.ShiftScaleRotate(shift_limit=0.1, scale_limit=0.2,
                            rotate_limit=10, border_mode=cv2.BORDER_CONSTANT, p=0.5),
 
@@ -117,28 +147,27 @@ class FFDataset(data.Dataset):
 
     def __init__(self, dataset_root, frame_num=300, size=299, augment=True):
         self.data_root = dataset_root
+        mode = 'real' if 'real' in dataset_root else 'fake'
         self.frame_num = frame_num
-        self.train_list = self.collect_image(self.data_root)
+        self.train_list = self.collect_image(self.data_root, mode)
         self.augment = augment
         self.transform = trans.ToTensor()
         self.max_val = 1.
         self.min_val = -1.
         self.size = size
 
-    def collect_image(self, root):
+    def collect_image(self, root, mode):
         image_path_list = []
         for split in os.listdir(root):
             split_root = os.path.join(root, split)
             img_list = os.listdir(split_root)
             random.shuffle(img_list)
-            img_list = (img_list 
-            if len(img_list) < self.frame_num 
-            else img_list[:self.frame_num]
-            )
+            img_list = img_list if len(img_list) < self.frame_num else img_list[:self.frame_num]
             for img in img_list:
                 img_path = os.path.join(split_root, img)
                 image_path_list.append(img_path)
         return image_path_list
+        # return image_path_list * len(fake_dict) if mode == 'real' else image_path_list
 
     def read_image(self, path):
         img = Image.open(path)
@@ -164,10 +193,10 @@ class FFDataset(data.Dataset):
         # do data aug
         if self.augment:
             img = get_aug(img)
-        # img = trans.functional.to_tensor(img)
-        img = self.transform(img)
-        img = img * (self.max_val - self.min_val) + self.min_val
-        # img = trans.functional.normalize(img, [0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
+        img = trans.functional.to_tensor(img)
+        img = trans.functional.normalize(
+            img, [0.485, 0.456, 0.406], [0.229, 0.224, 0.225]
+        )
         return img, label
 
     def collate(batch):
@@ -229,8 +258,10 @@ class CelebDataset(data.Dataset):
         image_path = self.train_list[index]
         img = self.read_image(image_path)
         img = self.resize_image(img, size=self.size)
-        img = self.transform(img)
-        img = img * (self.max_val - self.min_val) + self.min_val
+        img = trans.functional.to_tensor(img)
+        img = trans.functional.normalize(
+            img, [0.485, 0.456, 0.406], [0.229, 0.224, 0.225]
+        )
         label = image_path.split('/')[-3]
         if label == 'real':
             label = 0
@@ -258,6 +289,13 @@ def get_dataset(
     frame_num=300, 
     augment=True, 
     fake_list=['Deepfakes', 'Face2Face', 'FaceSwap', 'NeuralTextures']
+    # fake_list=[
+    #         'Deepfakes', 'Face2Face', 'FaceSwap', 'NeuralTextures', 
+    #         'Deepfakes_Face2Face', 'Deepfakes_FaceSwap', 'Deepfakes_NeuralTextures', 
+    #         'Deepfakes_real', 'Face2Face_FaceSwap', 'Face2Face_NeuralTextures', 
+    #         'Face2Face_real', 'FaceSwap_NeuralTextures', 'FaceSwap_real', 
+    #         'NeuralTextures_real',
+    #         ]
     ):
 
     root = os.path.join(root, name)
@@ -273,7 +311,7 @@ def get_dataset(
     return torch.utils.data.ConcatDataset(dset_lst), total_len
 
 
-def evaluate(model, data_path, mode='val', test_data_name='celeb'):
+def evaluate(model, data_path, mode='val', test_data_name='celeb', epoch=0):
     root = data_path
     origin_root = root
     assert test_data_name != 'celeb' \
@@ -298,7 +336,14 @@ def evaluate(model, data_path, mode='val', test_data_name='celeb'):
             size=256, 
             frame_num=50, 
             augment=False, 
-            fake_list=['Deepfakes', 'Face2Face', 'FaceSwap', 'NeuralTextures']
+            # fake_list=[
+            # 'Deepfakes', 'Face2Face', 'FaceSwap', 'NeuralTextures', 
+            # 'Deepfakes_Face2Face', 'Deepfakes_FaceSwap', 'Deepfakes_NeuralTextures', 
+            # 'Deepfakes_real', 'Face2Face_FaceSwap', 'Face2Face_NeuralTextures', 
+            # 'Face2Face_real', 'FaceSwap_NeuralTextures', 'FaceSwap_real', 
+            # 'NeuralTextures_real',
+            # ]
+            fake_list=['Deepfakes', 'Face2Face', 'FaceSwap', 'NeuralTextures'],
         )
         dataset_img = torch.utils.data.ConcatDataset(
             [dataset_real, dataset_fake]
@@ -327,17 +372,29 @@ def evaluate(model, data_path, mode='val', test_data_name='celeb'):
             tta.HorizontalFlip(),
             # tta.Rotate90(angles=[0, 90]),
             # tta.Scale(scales=[1, 2]),
-            tta.Multiply(factors=[0.9, 1, 1.1]),
+            # tta.Multiply(factors=[0.9, 1, 1.1]),
         ]
     )
     tta_model = tta.ClassificationTTAWrapper(model, transforms)
 
-    TTA = False
+    TSNE = False
+    CAM = False
+    TSNE_PATH = 'tsne'
+    CAM_PATH = 'grad_cam_save'
     video_auc = False
+    TTA = True
+
+    if TSNE:
+        os.makedirs(TSNE_PATH, exist_ok=True)
+    if CAM:
+        os.makedirs(CAM_PATH, exist_ok=True)
 
     with torch.no_grad():
         y_true, y_pred = [], []
         spe_true, spe_pred = [], []
+        feature_vector_list = []
+        content_list = []
+        specific_list = []
 
         bz = 64
         for i, d in enumerate(dataset_img.datasets):
@@ -347,7 +404,7 @@ def evaluate(model, data_path, mode='val', test_data_name='celeb'):
                 shuffle=True,
                 num_workers=8
             )
-            for img, label in dataloader:
+            for index, (img, label) in enumerate(dataloader):
                 # get specific label
                 spe_label = deepcopy(label)
                 # make instance label to share label
@@ -355,10 +412,28 @@ def evaluate(model, data_path, mode='val', test_data_name='celeb'):
                 if not label.any() == 0:
                     label = torch.ones_like(label)
                 img = img.detach().cuda()
+                if CAM:
+                    cam_img = img[:10, :, :, :].detach()
 
                 # *** normal test *** #
                 if not TTA:
-                    output = model.forward(img, train=False)
+                    output, feat = model.forward(img, train=False)
+
+                    feat_vec = (feat[1]
+                                .detach()
+                                .cpu()
+                                .numpy()
+                                )
+                    spe_vec = (feat[0]
+                                .detach()
+                                .cpu()
+                                .numpy()
+                                )
+                    con_vec = (feat[-1]
+                                .detach()
+                                .cpu()
+                                .numpy()
+                                )
                     pred_sp = (output[0]
                                .data.max(1, keepdim=True)[1]
                                .detach()
@@ -367,6 +442,14 @@ def evaluate(model, data_path, mode='val', test_data_name='celeb'):
                                .flatten()
                                .tolist()
                                )
+                    # pred_sh = (output[1]
+                    #            .data.max(1, keepdim=True)[1]
+                    #            .detach()
+                    #            .cpu()
+                    #            .numpy()
+                    #            .flatten()
+                    #            .tolist()
+                    #            )
                     pred_sh = (output[1]
                                .sigmoid()
                                .flatten()
@@ -395,8 +478,16 @@ def evaluate(model, data_path, mode='val', test_data_name='celeb'):
                         spe_pred.extend(pred_sp)
                         spe_true.extend(true_sp)
                         # share acc
+                        # print(f"y_true: {np.array(true_sh).shape}")
+                        # print(f"y_pred: {np.array(pred_sh).shape}")
                         y_pred.extend(pred_sh)  # 0:spe, 1:sha
                         y_true.extend(true_sh)
+                        # feature vector
+                        feature_vector_list.extend(feat_vec)
+                        # content vector
+                        content_list.extend(con_vec)
+                        # specific vector
+                        specific_list.extend(spe_vec)
                 else:
                     # TODO implement this with specific acc
                     # *** TTA *** #
@@ -405,10 +496,54 @@ def evaluate(model, data_path, mode='val', test_data_name='celeb'):
                         # augment image
                         augmented_image = transformer.augment_image(img)
                         # pass to model
-                        output = model.forward(augmented_image, False)
+                        output, feat = model.forward(augmented_image, train=False)
+                        feat_vec = (feat[1]
+                                    .detach()
+                                    .cpu()
+                                    .numpy()
+                                    )
+                        spe_vec = (feat[0]
+                                    .detach()
+                                    .cpu()
+                                    .numpy()
+                                    )
+                        con_vec = (feat[-1]
+                                    .detach()
+                                    .cpu()
+                                    .numpy()
+                                    )
+                        pred_sp = (output[0]
+                                    .data.max(1, keepdim=True)[1]
+                                    .detach()
+                                    .cpu()
+                                    .numpy()
+                                    .flatten()
+                                    .tolist()
+                                    )
+                        # pred_sh = (output[1]
+                        #            .data.max(1, keepdim=True)[1]
+                        #            .detach()
+                        #            .cpu()
+                        #            .numpy()
+                        #            .flatten()
+                        #            .tolist()
+                        #            )
+                        pred_sh = (output[1]
+                                    .sigmoid()
+                                    .flatten()
+                                    .tolist()
+                                    )
+                        true_sh = (label
+                                    .flatten()
+                                    .tolist()
+                                    )
+                        true_sp = (spe_label
+                                    .flatten()
+                                    .tolist()
+                                    )
                         # 0:spe, 1:sha
-                        tmp_pred.extend(output[1].sigmoid().flatten().tolist())
-                        tmp_true.extend(label.flatten().tolist())
+                        tmp_pred.extend(pred_sh)
+                        tmp_true.extend(true_sh)
                     pred = [np.mean(x)
                             for x in chunked(tmp_pred, len(transforms))]
                     true = [np.mean(x)
@@ -419,12 +554,24 @@ def evaluate(model, data_path, mode='val', test_data_name='celeb'):
                         y_true.append(np.argmax(np.bincount(true)))
                     else:
                         # frame
-                        y_pred.extend(pred)
+                        # specific acc
+                        spe_pred.extend(pred_sp)
+                        spe_true.extend(true_sp)
+                        # share acc
+                        y_pred.extend(pred)  # 0:spe, 1:sha
                         y_true.extend(true)
+                        # feature vector
+                        feature_vector_list.extend(feat_vec)
+                        # content vector
+                        content_list.extend(con_vec)
+                        # specific vector
+                        specific_list.extend(spe_vec)
                     torch.cuda.empty_cache()
 
     y_true, y_pred = np.array(y_true), np.array(y_pred)
     spe_true, spe_pred = np.array(spe_true), np.array(spe_pred)
+    # print(f"y_true: {y_true.shape}")
+    # print(f"y_pred: {y_pred.shape}")
     fpr, tpr, thresholds = roc_curve(y_true, y_pred, pos_label=1)
     AUC = cal_auc(fpr, tpr)
 
@@ -436,6 +583,102 @@ def evaluate(model, data_path, mode='val', test_data_name='celeb'):
 
     spe_acc = accuracy_score(spe_true, spe_pred)
 
+    # tsne
+    if TSNE:
+        sample_num = 500
+        assert len(feature_vector_list) == len(content_list), \
+            "Length between content and share should be the same"
+        # index_list = np.random.randint(0, len(feature_vector_list), sample_num)
+        # random.shuffle(idx_real)
+        # random.shuffle(idx_fake)
+        idx_real = idx_real[:sample_num//2]
+        idx_fake = idx_fake[:sample_num//2]
+        index_list = np.vstack((idx_real, idx_fake)).flatten()
+        l = y_true[index_list]
+        l_sep = spe_true[index_list]
+
+        # share visualization between real and fake
+        X = np.array(feature_vector_list)[index_list, :]
+        Y = tsne(X, 2, 50, 20.0)
+        Y_1 = Y[l==0, :]
+        Y_2 = Y[l==1, :]
+        plt.scatter(Y_1[:, 0], Y_1[:, 1], 20, color='red', label='real')
+        plt.scatter(Y_2[:, 0], Y_2[:, 1], 20, color='blue', label='fake')
+        plt.legend()
+        plt.savefig(os.path.join(TSNE_PATH, f'share_{test_data_name}_{epoch}.png'))
+        np.save(os.path.join(TSNE_PATH, f'share_X_{test_data_name}_{epoch}.npy'), X)
+        np.save(os.path.join(TSNE_PATH, f'share_Y_{test_data_name}_{epoch}.npy'), Y)
+        np.save(os.path.join(TSNE_PATH, f'share_label_{test_data_name}_{epoch}.npy'), l)
+        plt.clf()
+
+        # specific visualization between real and fake
+        X = np.array(specific_list)[index_list, :]
+        Y = tsne(X, 2, 50, 20.0)
+        Y_0 = Y[l_sep==0, :]
+        Y_1 = Y[l_sep==1, :]
+        Y_2 = Y[l_sep==2, :]
+        Y_3 = Y[l_sep==3, :]
+        Y_4 = Y[l_sep==4, :]
+        plt.scatter(Y_0[:, 0], Y_0[:, 1], 20, color='red', label='real')
+        plt.scatter(Y_1[:, 1], Y_1[:, 1], 20, color='orange', label='Deepfakes')
+        plt.scatter(Y_2[:, 1], Y_2[:, 1], 20, color='blue', label='Face2Face')
+        plt.scatter(Y_3[:, 1], Y_3[:, 1], 20, color='green', label='FaceSwap')
+        plt.scatter(Y_4[:, 1], Y_4[:, 1], 20, color='slategrey', label='NeuralTextures')
+        plt.legend()
+        plt.savefig(os.path.join(TSNE_PATH, f'specific_{test_data_name}_{epoch}.png'))
+        np.save(os.path.join(TSNE_PATH, f'specific_X_{test_data_name}_{epoch}.npy'), X)
+        np.save(os.path.join(TSNE_PATH, f'specific_Y_{test_data_name}_{epoch}.npy'), Y)
+        np.save(os.path.join(TSNE_PATH, f'specific_label_{test_data_name}_{epoch}.npy'), l_sep)
+        plt.clf()
+
+        # content visualization between real and fake
+        X = np.array(content_list)[index_list, :]
+        Y = tsne(X, 2, 50, 20.0)
+        Y_1 = Y[l==0, :]
+        Y_2 = Y[l==1, :]
+        plt.scatter(Y_1[:, 0], Y_1[:, 1], 20, color='red', label='real')
+        plt.scatter(Y_2[:, 0], Y_2[:, 1], 20, color='blue', label='fake')
+        plt.legend()
+        plt.savefig(os.path.join(TSNE_PATH, f'content_{test_data_name}_{epoch}.png'))
+        np.save(os.path.join(TSNE_PATH, f'content_X_{test_data_name}_{epoch}.npy'), X)
+        np.save(os.path.join(TSNE_PATH, f'content_Y_{test_data_name}_{epoch}.npy'), Y)
+        np.save(os.path.join(TSNE_PATH, f'content_label_{test_data_name}_{epoch}.npy'), l)
+        plt.clf()
+
+    # grad cam visualization for feature map of both the fingerprint and content
+    if CAM:
+        _, c, h, w = cam_img.shape
+        for i in range(10):
+            cam_one_img = cam_img[i, :, :, :].unsqueeze(0)
+            numpy_img = (
+                inverser(cam_one_img.squeeze(0))  # inverse normalization
+                .permute(1,2,0)                   # inverse to_tensor (adjust channel order)
+                .detach()
+                .cpu()
+                .numpy()
+                * 255.
+            )
+            # fingerprint
+            target_layers = [model.model.module.encoder_f.block12]
+            cam = GradCAM(
+                model=model.model.module, 
+                target_layers=target_layers, 
+                use_cuda=True,
+            )
+            grayscale_cam = (
+                cam(input_tensor=cam_one_img, target_category=1)[0, :]
+            )
+            visualization = show_cam_on_image(
+                numpy_img.astype(dtype=np.float32) / 255.,
+                grayscale_cam, 
+                use_rgb=True,
+            )
+            img_name = f"{epoch}_{index}_{i}_{test_data_name}_encoder_f_block12.png"
+            cv2.imwrite(
+                os.path.join(CAM_PATH, img_name), 
+                cv2.cvtColor(visualization, cv2.COLOR_BGR2RGB)
+            )
+
     return AUC, r_acc, f_acc, spe_acc
 
 
@@ -445,7 +688,6 @@ def evaluate(model, data_path, mode='val', test_data_name='celeb'):
 __all__ = ['setup_logger']
 
 DEFAULT_WORK_DIR = 'results'
-
 
 def setup_logger(work_dir=None, logfile_name='log.txt', logger_name='logger'):
     """Sets up logger from target work directory.
