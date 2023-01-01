@@ -24,7 +24,7 @@ max_epoch = 15
 loss_freq = 40
 visualization = False
 ckpt_dir = './weights'
-ckpt_name = 'paper_disfin_notta_bs32_lr00002_2enc_weightdecay1e4_drop0.7_addlambda_0.3_wof1f3loss_huberloss'
+ckpt_name = 'disfin_paircombination_midloss_warmup_tta'
 img_save_path = 'img_save'
 os.makedirs(img_save_path, exist_ok=True)
 
@@ -76,8 +76,7 @@ if __name__ == '__main__':
     ckpt_model_name = 'best.pkl'
     
     # train
-    num_training_steps_per_epoch = len(dataset) // batch_size
-    model = Trainer(gpu_ids, pretrained_path, num_training_steps_per_epoch)
+    model = Trainer(gpu_ids)
     model.total_steps = 0
     epoch = 0
     best_auc = 0.
@@ -106,20 +105,10 @@ if __name__ == '__main__':
             if data_real.shape[0] != data_fake.shape[0]:
                 continue
 
-            # pair combination, label augmentation
-            pair_index = random.randint(0, 1)
-            if pair_index == 0:  # fake
-                aug_label = torch.ones_like(label_real)
-                aug_label_instance = deepcopy(label_fake_instance)
-            elif pair_index == 1:  # real
-                aug_label = torch.zeros_like(label_real)
-                aug_label_instance = deepcopy(aug_label)
-            else:
-                raise ValueError("pair index should be 0 or 1")
-
             # *** share label task *** #
             data = torch.cat([data_real,data_fake],dim=0)
-            label = torch.cat([label_real,label_fake],dim=0)
+            label = torch.cat([label_real,label_fake,label_real,label_fake],dim=0)
+            adv_label = deepcopy(label)
 
             # # manually shuffle
             # idx = list(range(data.shape[0]))
@@ -132,24 +121,24 @@ if __name__ == '__main__':
 
             model.set_input(data,label)
 
-            stu_fea, stu_cla = model.model(model.input, pair_index=pair_index)
+            stu_fea, stu_cla = model.model(model.input)
             (spe_out, sha_out), \
             reconstruction_image_1, \
             reconstruction_image_2, \
+            reconstruction_image_11, \
+            reconstruction_image_22, \
             forgery_image_12, \
-            f1_spe, f3_spe \
-                = stu_cla
+            forgery_image_21, \
+            f1, f2, c1, c2, \
+            adv = stu_cla
+            # f1_recon, c1_recon, f2_recon, c2_recon, \
 
             # *** share label task *** #
-            # model.label = label.to(model.device)
             loss_share = model.optimize_weight(sha_out)
 
             # *** instance label task *** #
-            spe_label = torch.cat([label_real,label_fake_instance],dim=0)
-
-            # spe_label = spe_label[idx]
+            spe_label = torch.cat([label_real,label_fake_instance,label_real,label_fake_instance],dim=0)
             spe_label = spe_label.detach()
-
             model.label = spe_label.to(model.device)
             loss_specific = model.optimize_weight_ce(spe_out)
 
@@ -157,26 +146,45 @@ if __name__ == '__main__':
             loss_reconstruction_1, \
             loss_reconstruction_2, \
             loss_reconstruction_3, \
-            loss_f1_f3 \
+            loss_reconstruction_4, \
+            loss_reconstruction_5, \
+            loss_reconstruction_6,  \
+            feature_loss \
                 = model.optimize_weight_mse(
                 data_real.to(model.device),
                 data_fake.to(model.device),
                 reconstruction_image_1,
                 reconstruction_image_2,
+                reconstruction_image_11,
+                reconstruction_image_22,
                 forgery_image_12,
-                f1_spe, 
-                f3_spe,
+                forgery_image_21,
+                # f1, f2, c1, c2,
+                # f1_recon, c1_recon, f2_recon, c2_recon
             )
 
             loss_reconstruction = loss_reconstruction_1 + \
                                   loss_reconstruction_2 + \
-                                  loss_reconstruction_3
+                                  loss_reconstruction_3 + \
+                                  loss_reconstruction_4 + \
+                                  loss_reconstruction_5 + \
+                                  loss_reconstruction_6
+
+            # # *** discriminator loss *** #
+            # loss_discriminator \
+            #     = model.optimize_weight_discriminator(
+            #     adv_label.to(model.device),
+            #     reconstruction_image_1.detach(),
+            #     reconstruction_image_2.detach()
+            # )
 
             # total loss
             loss = model.get_final_loss(
                 loss_share, 
                 loss_specific,
-                loss_reconstruction
+                loss_reconstruction,
+                # feature_loss,
+                # -loss_discriminator.detach().to(model.device),  # for the view of generator
             )
 
             if model.total_steps % loss_freq == 0:
@@ -185,10 +193,11 @@ if __name__ == '__main__':
                     f' spe_loss: {loss_specific:.5f}' 
                     f' sha_loss: {loss_share:.5f}' 
                     f' mse_loss: {loss_reconstruction:.5f}' 
+                    # f' adv_loss: {loss_discriminator:.5f}' 
                     f' loss_fake_reconstruction1: {loss_reconstruction_1:.5f}' 
                     f' loss_real_reconstruction2: {loss_reconstruction_2:.5f}' 
                     f' loss_forgery_real: {loss_reconstruction_3:.5f}' 
-                    # f' loss_f1_f3_spe: {loss_f1_f3:.5f}' 
+                    # f' loss_feature: {feature_loss:.5f}' 
                     f' at step: {model.total_steps}'
                 )
 
@@ -201,10 +210,22 @@ if __name__ == '__main__':
                     vutils.save_image(
                         reconstruction_image_2.detach().cpu(), 
                         f'{img_save_path}/epoch{epoch}_step{model.total_steps}_reconstruction_image_2.png')
+                    
+                    vutils.save_image(
+                        reconstruction_image_11.detach().cpu(), 
+                        f'{img_save_path}/epoch{epoch}_step{model.total_steps}_reconstruction_image_11.png')
+
+                    vutils.save_image(
+                        reconstruction_image_22.detach().cpu(), 
+                        f'{img_save_path}/epoch{epoch}_step{model.total_steps}_reconstruction_image_22.png')
 
                     vutils.save_image(
                         forgery_image_12.detach().cpu(), 
                         f'{img_save_path}/epoch{epoch}_step{model.total_steps}_forgery_image_12.png')
+                    
+                    vutils.save_image(
+                        forgery_image_21.detach().cpu(), 
+                        f'{img_save_path}/epoch{epoch}_step{model.total_steps}_forgery_image_21.png')
 
                     vutils.save_image(
                         data_real.detach().cpu(), 
@@ -222,7 +243,8 @@ if __name__ == '__main__':
                     model, 
                     dataset_path, 
                     mode='test', 
-                    test_data_name='FF'
+                    test_data_name='FF',
+                    epoch=epoch,
                 )
 
                 logger.debug(
@@ -238,7 +260,8 @@ if __name__ == '__main__':
                     model, 
                     celeb_path, 
                     mode='test', 
-                    test_data_name='celeb'
+                    test_data_name='celeb',
+                    epoch=epoch,
                 )
 
                 logger.debug(
@@ -250,13 +273,14 @@ if __name__ == '__main__':
                     f' data_name: celeb'
                 )
 
-                if auc > best_auc:
+                if auc > best_auc and r_acc > 0.5 and f_acc > 0.5:
                     best_auc = auc
                     logger.debug(f'Current Best AUC: {best_auc}')
-                    model.save(path=f'{ckpt_name}.pth')
+                    model.save(path=f'{ckpt_name}_best.pth')
                 model.model.train()
         epoch = epoch + 1
 
+    model.save(path=f'{ckpt_name}_last.pth')
     # model.model.eval()
     # auc, r_acc, f_acc = evaluate(model, dataset_path, mode='test')
     # logger.debug(f'(Test @ epoch {epoch}) auc: {auc}, r_acc: {r_acc}, f_acc:{f_acc}')
