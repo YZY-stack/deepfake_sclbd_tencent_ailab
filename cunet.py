@@ -67,7 +67,7 @@ class Conditional_UNet(nn.Module):
         self.activation = nn.Tanh()
         #self.init_weight() 
         
-    def forward(self, x, c):
+    def forward(self, c, x):  # c is the style and x is the content
         x = self.adain3(x, c)
         x = self.upsample(x)
         x = self.dropout(x)
