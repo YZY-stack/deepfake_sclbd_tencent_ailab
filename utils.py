@@ -376,13 +376,14 @@ def evaluate(model, data_path, mode='val', test_data_name='celeb', epoch=0):
         ]
     )
     tta_model = tta.ClassificationTTAWrapper(model, transforms)
+    # tta_model = tta.ClassificationTTAWrapper(model, transforms, merge_mode='mean')
 
     TSNE = False
     CAM = False
     TSNE_PATH = 'tsne'
     CAM_PATH = 'grad_cam_save'
     video_auc = False
-    TTA = True
+    TTA = False
 
     if TSNE:
         os.makedirs(TSNE_PATH, exist_ok=True)
@@ -489,7 +490,6 @@ def evaluate(model, data_path, mode='val', test_data_name='celeb', epoch=0):
                         # specific vector
                         specific_list.extend(spe_vec)
                 else:
-                    # TODO implement this with specific acc
                     # *** TTA *** #
                     tmp_pred, tmp_true = [], []
                     for transformer in transforms:  # custom transforms or e.g. tta.aliases.d4_transform()
