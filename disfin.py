@@ -222,7 +222,7 @@ class disfin(nn.Module):
                             reconstruction_image_1, reconstruction_image_2, \
                             # reconstruction_image_11, reconstruction_image_22, \
                             # forgery_image_12, forgery_image_21, \
-                            f1, f2, c1, c2, \
+                            # f1, f2, c1, c2, \
                             # f1_recon, c1_recon, f2_recon, c2_recon, \
                             None)
                             # adv_2, adv_1)
