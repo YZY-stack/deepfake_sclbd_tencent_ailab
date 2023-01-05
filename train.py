@@ -10,7 +10,7 @@ from torchvision import utils as vutils
 
 from utils import evaluate, get_dataset, FFDataset, setup_logger
 from trainer import Trainer
-# from model.vgg import load_vgg16
+import model.vgg as vgg_loss
 import numpy as np
 from copy import deepcopy
 import random
@@ -21,12 +21,12 @@ celeb_path = '/mntnfs/sec_data2/yanzhiyuan/deepfakes_dataset/CelebDF1_crop'
 pretrained_path = 'pretrained/xception-b5690688.pth'
 batch_size = 32
 gpu_ids = [*range(osenvs)]
-max_epoch = 15
+max_epoch = 20
 loss_freq = 40
-visualization = True
+visualization = False
 ckpt_dir = './weights'
-ckpt_name = 'disfin_paircombination_midloss_warmup_selfcon_direct_adv_nomoreadv_nodoublecycle_lsgan_1'
-img_save_path = 'img_save'
+ckpt_name = 'paper_final_largeDisc_20epoch_mselambda1'
+img_save_path = 'img_save_vgg'
 os.makedirs(img_save_path, exist_ok=True)
 
 # fix the seed for reproducibility
@@ -65,6 +65,10 @@ if __name__ == '__main__':
     model.total_steps = 0
     epoch = 0
     best_auc = 0.
+
+    # init for vgg
+    crit_vgg = vgg_loss.VGGLoss().to(model.device)
+    crit_tv = vgg_loss.TVLoss(p=2)
     
     while epoch < max_epoch:
 
@@ -137,13 +141,13 @@ if __name__ == '__main__':
             self_reconstruction_image_2, \
             reconstruction_image_1, \
             reconstruction_image_2, \
-            f1, f2, c1, c2, \
             _ = stu_cla
 
             # reconstruction_image_11, \
             # reconstruction_image_22, \
             # forgery_image_12, \
             # forgery_image_21, \
+            # f1, f2, c1, c2, \
 
             # f1_recon, c1_recon, f2_recon, c2_recon, \
 
@@ -195,7 +199,21 @@ if __name__ == '__main__':
             )
 
             # # *** vgg loss *** #
-            # load_vgg16('./vgg16')
+            perceptual_loss_1 = crit_vgg(
+                reconstruction_image_1.to(model.device),
+                data_real.to(model.device), 
+                target_is_features=False
+            )
+            # perceptual_loss_1 += crit_tv(reconstruction_image_1) * 20
+
+            perceptual_loss_2 = crit_vgg(
+                reconstruction_image_2.to(model.device),
+                data_fake.to(model.device), 
+                target_is_features=False
+            )
+            # perceptual_loss_2 += crit_tv(reconstruction_image_2) * 20
+
+            perceptual_loss = perceptual_loss_1 + perceptual_loss_2
 
             # total loss
             loss = model.get_final_loss(
@@ -203,6 +221,7 @@ if __name__ == '__main__':
                 loss_specific,
                 loss_reconstruction,
                 # feature_loss,
+                perceptual_loss,
                 -loss_discriminator.detach().to(model.device),  # for the view of generator
             )
 
@@ -215,6 +234,7 @@ if __name__ == '__main__':
                     f' adv_loss: {loss_discriminator:.5f}' 
                     f' loss_fake_reconstruction1: {self_loss_reconstruction_1:.5f}' 
                     f' loss_real_reconstruction2: {self_loss_reconstruction_2:.5f}' 
+                    f' perceptual_loss: {perceptual_loss:.5f}' 
                     # f' loss_forgery_real: {loss_reconstruction_3:.5f}' 
                     # f' loss_feature: {feature_loss:.5f}' 
                     f' at step: {model.total_steps}'
@@ -295,11 +315,12 @@ if __name__ == '__main__':
                 if auc > best_auc and r_acc > 0.5 and f_acc > 0.5:
                     best_auc = auc
                     logger.debug(f'Current Best AUC: {best_auc}')
-                    model.save(path=f'{ckpt_name}_best.pth')
+                    # model.save(path=f'{ckpt_name}_best.pth')
                 model.model.train()
         epoch = epoch + 1
 
-    model.save(path=f'{ckpt_name}_last.pth')
+    # model.save(path=f'{ckpt_name}_last.pth')
     # model.model.eval()
     # auc, r_acc, f_acc = evaluate(model, dataset_path, mode='test')
     # logger.debug(f'(Test @ epoch {epoch}) auc: {auc}, r_acc: {r_acc}, f_acc:{f_acc}')
+    logger.debug("finish training!")
