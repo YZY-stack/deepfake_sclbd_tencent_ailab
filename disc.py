@@ -15,16 +15,16 @@ def sn_double_conv(in_channels, out_channels):
 class Disc(nn.Module):
     def __init__(self):
         super().__init__()
-        self.conv1 = sn_double_conv(3, 64)
-        self.conv2 = sn_double_conv(64, 128)
-        self.conv3 = sn_double_conv(128, 256)
-        self.conv4 = sn_double_conv(256, 512)
+        self.conv1 = sn_double_conv(3, 128)
+        self.conv2 = sn_double_conv(128, 512)
+        self.conv3 = sn_double_conv(512, 1024)
+        self.conv4 = sn_double_conv(1024, 512)
         [nn.init.xavier_uniform_(
             getattr(self, 'conv{}'.format(i))[j].weight,
             np.sqrt(2)
             ) for i in range(1, 5) for j in range(2)]
 
-        self.l = nn.utils.spectral_norm(nn.Linear(512, 2))
+        self.l = nn.utils.spectral_norm(nn.Linear(512, 1))
         nn.init.xavier_uniform_(self.l.weight)
  
     def forward(self, x):
